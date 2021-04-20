@@ -7,17 +7,28 @@
 # Технические требования
 #  время выполнения <5 секунд
 #  параллельное (в спец. ситуациях синхронное) выполнение
+[ "$DEBUG" == 'true' ] && set -x
 
-SUB_DIR=/tmp/proc_subs/
-DELAY=30
-RUNNING=0
+WORK_DIR=${WORK_DIR:-~/.local/share/tool_control}
+SUB_DIR=$WORK_DIR/proc_subs/
+TOOL_STATE=$WORK_DIR/status
+DELAY=${DELAY:-$((30 * 60))}  # delay in seconds
+
 
 function print_usage() {
-    echo "`basename "$0"` <subscribe|unsubscribe|update> [subs_id]"
-    echo "  subscribe [subs_id]   : create new or update existing subscription"
-    echo "  unsubscribe <subs_id> : unsubscribe"
-    echo "  update                : check subscriptions and finish the process if needed"
-    echo "  clean                 : stop the process and remove all subscriptions"
+    cat <<EOF
+`basename "$0"` <subscribe|unsubscribe|update> [subs_id]
+    info <start|timeout|update|end> <subs_id>
+        Show info about subscription
+    subscribe [subs_id]
+        Create new or update existing subscription
+    unsubscribe <subs_id>
+        Unsubscribe from the tool
+    update
+        Check subscriptions. The tool may be stopped if needed
+    clean
+        Stop the process and remove all subscriptions
+EOF
 }
 
 function start_tool() {
@@ -32,26 +43,48 @@ function stop_tool() {
     echo "Stop tool"
 }
 
+function is_running() {
+    if [[ ! -f "$TOOL_STATE" ]]; then
+        echo "0" >> $TOOL_STATE
+    fi
+    cat $TOOL_STATE
+}
+
+function set_running() {
+    case "$1" in
+        0|1)
+            echo "$1" > $TOOL_STATE
+            ;;
+        *)
+            echo "Unknows tool status to set: $1"
+            exit 1
+    esac
+}
+
 function update_tool_state() {
     case "$1" in
         subscribed)
-            if [[ $RUNNING == 0 ]]; then
+            if [[ $(is_running) == 0 ]]; then
                start_tool
-               RUNNING=1
+               set_running 1
             else
                 update_tool
             fi
             ;;
         unsubscribed | update)
-            update_tool
-            if [[ -z $(ls -A $SUB_DIR) ]]; then
-                stop_tool
-                RUNNING=0
+            if [[ is_running == 1 ]]; then
+                update_tool
+                has_active_subs=$(jq --slurp 'any(.end == null)' $SUB_DIR/*)
+                if [[ $has_active_subs == "false" ]]; then
+                    stop_tool
+                    set_running 0
+                fi
             fi
             ;;
         *)
             echo "Unknown event $1"
             exit 1
+            ;;
     esac
 }
 
@@ -60,8 +93,8 @@ function subscribe() {
     update_time=`date -Iseconds`
     timeout=$DELAY
     if [[ -f "$subs" ]]; then
-        if [[ `jq '.ended' "$subs"` == "null" ]]; then
-            cat <<< $(jq --arg time "$update_time" '.updated = $time' "$subs") > "$subs"
+        if [[ $(jq '.end' "$subs") == "null" ]]; then
+            cat <<< $(jq --arg time "$update_time" '.update = $time' "$subs") > "$subs"
         else
             echo "This subscription already ended"
             exit 1
@@ -69,10 +102,10 @@ function subscribe() {
     else
         cat > "$subs" << EOF
 {
-  "started": "$update_time",
+  "start": "$update_time",
   "timeout": "$timeout",
-  "updated": "$update_time",
-  "ended": null
+  "update": "$update_time",
+  "end": null
 }
 EOF
     fi
@@ -82,8 +115,8 @@ function unsubscribe() {
     subs=$1 # subscription file
     if [[ -f "$subs" ]]; then
         end_time=`date -Iseconds`
-        if [[ `jq '.ended' "$subs"` == "null" ]]; then
-            cat <<< $(jq --arg time "$end_time" '.ended = $time' "$subs") > "$subs"
+        if [[ $(jq '.end' "$subs") == "null" ]]; then
+            cat <<< $(jq --arg time "$end_time" '.end = $time' "$subs") > "$subs"
         else
             echo "This subscription already ended"
             exit 1
@@ -97,11 +130,12 @@ function unsubscribe() {
 function check_subscription() {
     subs=$1 # subscription file
     if [[ -f "$subs" ]]; then
-        if [[ `jq '.ended' "$subs"` == "null" ]]; then
+        if [[ $(jq '.end' "$subs") == "null" ]]; then
             current_time=`date -u +%s`
-            expected_end_time=`date -u -d \`jq -r '.updated' sub.json\` +%s`
-            if ((expected_end_time <= current_time)); then
-                cat <<< $(jq --arg time "$current_time" '.ended = $time' "$subs") > "$subs"
+            update_time=$(date -u -d $(jq -r '.update' $subs) +%s)
+            timeout=$(jq -r '.timeout' $subs)
+            if ((update_time + timeout <= current_time)); then
+                cat <<< $(jq --arg time "$current_time" '.end = $time' "$subs") > "$subs"
             fi
         else
             echo "This subscription already ended"
@@ -119,7 +153,7 @@ function get_info() {
         exit 1
     fi
     case "$1" in
-        started|updated|ended)
+        start|timeout|update|end)
             command=$1
             info=$(jq -r ".$command" $SUB_FILE)
             date -u -d "$info" +%s
@@ -149,7 +183,7 @@ case "$1" in
         update_tool_state unsubscribed
         ;;
     update)
-        for f in "$SUB_DIR"; do
+        for f in $SUB_DIR/*; do
             check_subscription "$f"
         done
         update_tool_state update
