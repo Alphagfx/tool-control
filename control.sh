@@ -166,9 +166,9 @@ case "$1" in
         ;;
     subscribe)
         mkdir -p "$SUB_DIR"
-        SUB_FILE="$SUB_DIR/${2:-`date +%Y%m%d_%H%M%S`}"
-        subscribe "$SUB_FILE"  || { echo "Subscription failed"; exit 1; }
-        echo "$SUB_FILE"
+        SUB_FILE=${2:-`date +%Y%m%d_%H%M%S`}
+        subscribe "$SUB_DIR/$SUB_FILE"  || { echo "Subscription failed"; exit 1; }
+        echo "Subscription name: $SUB_FILE"
         update_tool_state subscribed
         ;;
     unsubscribe)
