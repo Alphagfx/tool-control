@@ -68,7 +68,7 @@ function update_tool_state() {
             fi
             ;;
         unsubscribed|update)
-            if [[ is_running == 1 ]]; then
+            if [[ $(is_running) == 1 ]]; then
                 update_tool
                 for sub in $SUB_DIR/*; do
                     if [[ -z $(get_subs_value "$sub" end) ]]; then
