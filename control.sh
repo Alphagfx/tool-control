@@ -11,7 +11,9 @@ DELAY=${DELAY:-$((30 * 60))}  # delay in seconds
 
 function print_usage() {
     cat <<EOF
-`basename "$0"` <subscribe|unsubscribe|update> [subs_id]
+`basename "$0"` <status|info|subscribe|unsubscribe|update|clean> [subs_id]
+    status
+        Show current status of the tool (running or not)
     info <start|timeout|update|end> <subs_id>
         Show info about subscription
     subscribe [subs_id]
@@ -65,14 +67,16 @@ function update_tool_state() {
                 update_tool
             fi
             ;;
-        unsubscribed | update)
+        unsubscribed|update)
             if [[ is_running == 1 ]]; then
                 update_tool
-                has_active_subs=$(jq --slurp 'any(.end == null)' $SUB_DIR/*)
-                if [[ $has_active_subs == "false" ]]; then
-                    stop_tool
-                    set_running 0
-                fi
+                for sub in $SUB_DIR/*; do
+                    if [[ -z $(get_subs_value "$sub" end) ]]; then
+                        return
+                    fi
+                done
+                stop_tool
+                set_running 0
             fi
             ;;
         *)
@@ -87,20 +91,18 @@ function subscribe() {
     update_time=`date -Iseconds`
     timeout=$DELAY
     if [[ -f "$subs" ]]; then
-        if [[ $(jq '.end' "$subs") == "null" ]]; then
-            cat <<< $(jq --arg time "$update_time" '.update = $time' "$subs") > "$subs"
+        if [[ -z $(get_subs_value "$subs" end) ]]; then
+            set_subs_value "$subs" update "$update_time"
         else
             echo "This subscription already ended"
             exit 1
         fi
     else
         cat > "$subs" << EOF
-{
-  "start": "$update_time",
-  "timeout": "$timeout",
-  "update": "$update_time",
-  "end": null
-}
+start=$update_time
+timeout=$timeout
+update=$update_time
+end=
 EOF
     fi
 }
@@ -109,8 +111,8 @@ function unsubscribe() {
     subs=$1 # subscription file
     if [[ -f "$subs" ]]; then
         end_time=`date -Iseconds`
-        if [[ $(jq '.end' "$subs") == "null" ]]; then
-            cat <<< $(jq --arg time "$end_time" '.end = $time' "$subs") > "$subs"
+        if [[ -z $(get_subs_value "$subs" end) ]]; then
+            set_subs_value "$subs" end "$end_time"
         else
             echo "This subscription already ended"
             exit 1
@@ -124,12 +126,12 @@ function unsubscribe() {
 function check_subscription() {
     subs=$1 # subscription file
     if [[ -f "$subs" ]]; then
-        if [[ $(jq '.end' "$subs") == "null" ]]; then
+        if [[ -z $(get_subs_value "$subs" end) ]]; then
             current_time=`date -u +%s`
-            update_time=$(date -u -d $(jq -r '.update' $subs) +%s)
-            timeout=$(jq -r '.timeout' $subs)
+            update_time=$(date -u -d $(get_subs_value "$subs" update) +%s)
+            timeout=$(get_subs_value "$subs" timeout)
             if ((update_time + timeout <= current_time)); then
-                cat <<< $(jq --arg time "$current_time" '.end = $time' "$subs") > "$subs"
+                set_subs_value "$subs" end $current_time
             fi
         else
             echo "This subscription already ended"
@@ -149,8 +151,10 @@ function get_info() {
     case "$1" in
         start|timeout|update|end)
             command=$1
-            info=$(jq -r ".$command" $SUB_FILE)
-            date -u -d "$info" +%s
+            info=$(get_subs_value "$SUB_FILE" $command)
+            if [[ -n "$info" ]]; then
+                date -u -d "$info" +%s
+            fi
             ;;
         *)
             echo "No such info for this subscription"
@@ -159,8 +163,36 @@ function get_info() {
 }
 
 
+function get_subs_value() {
+    file=$1
+    key=$2
+    sed -rn "s/^${key}=([^\n]+)$/\1/p" $file
+}
+
+function set_subs_value() {
+    file=$1
+    key=$2
+    newvalue=$3
+
+    ls $SUB_DIR
+
+    if ! grep -R "^[#]*\s*${key}=.*" $file > /dev/null; then
+        echo "Appening because '${key}' is not found"
+        echo "$key=$newvalue" >> $file
+    else
+        echo "Updating because '${key}' is found"
+        sed -i "s/^[#]*\s*${key}=.*/${key}=$newvalue/" $file
+    fi
+
+    ls $SUB_DIR
+}
+
+
 
 case "$1" in
+    status)
+        echo "Running: $(is_running)"
+        ;;
     info)
         get_info "$2" "$3"  || { exit 1; }
         ;;
@@ -187,6 +219,7 @@ case "$1" in
             echo "Cleaning up subscriptions dir in '$SUB_DIR', please verify"
             rm -rfvI "$SUB_DIR"
         fi
+        set_running 0
         stop_tool
         ;;
     *)
