@@ -11,9 +11,11 @@ DELAY=${DELAY:-$((30 * 60))}  # delay in seconds
 
 function print_usage() {
     cat <<EOF
-`basename "$0"` <status|info|subscribe|unsubscribe|update|clean> [subs_id]
+`basename "$0"` <status|list|info|subscribe|unsubscribe|update|clean> [subs_id]
     status
         Show current status of the tool (running or not)
+    list
+        Show all subscriptions
     info <start|timeout|update|end> <subs_id>
         Show info about subscription
     subscribe [subs_id]
@@ -192,6 +194,11 @@ function set_subs_value() {
 case "$1" in
     status)
         echo "Running: $(is_running)"
+        ;;
+    list)
+        for f in $SUB_DIR/*; do
+            echo $(basename "$f")
+        done
         ;;
     info)
         get_info "$2" "$3"  || { exit 1; }
